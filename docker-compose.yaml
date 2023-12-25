@@ -1,0 +1,23 @@
+version: '3.9'
+services:
+  dev:
+    container_name: nginx_nms_ecs_dev
+    build:
+      context: docker/dev
+    platform: linux/amd64
+    volumes:
+      - './:/var/code'
+    working_dir: '/var/code'
+    command: [ '/bin/sh', '-c', 'tail -f /dev/null' ]
+    env_file:
+      - .env
+    restart: always
+    depends_on:
+      - docker
+
+  docker:
+    container_name: nginx_nms_ecs_dev_docker
+    image: docker:dind
+    privileged: true
+    environment:
+      - DOCKER_TLS_CERTDIR=

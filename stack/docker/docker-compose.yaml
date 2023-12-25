@@ -1,0 +1,62 @@
+version: '3.9'
+services:
+  nms:
+    container_name: nginx_nms_ecs_nms
+    build:
+      context: ../../docker/nms
+      secrets:
+        - nginx-crt
+        - nginx-key
+    platform: linux/amd64
+    env_file:
+      - .env
+    environment:
+      - NIM_CLICKHOUSE_ADDRESS=clickhouse
+      - NIM_CLICKHOUSE_PORT=9000
+    volumes:
+      - nms-data:/var/lib/nms
+    ports:
+      - '8443:443'
+    restart: always
+    depends_on:
+      - clickhouse
+
+  clickhouse:
+    container_name: nginx_nms_ecs_clickhouse
+    build:
+      context: ../../docker/clickhouse
+    platform: linux/amd64
+    env_file:
+      - .env
+    volumes:
+      - db-data:/var/lib/clickhouse
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 262144
+        hard: 262144
+    restart: always
+
+  dataplane:
+    container_name: nginx_nms_ecs_dataplane
+    build:
+      context: ../../docker/data-plane
+      secrets:
+        - nginx-crt
+        - nginx-key
+    platform: linux/amd64
+    environment:
+      - NIM_HOST=nms
+    restart: always
+    depends_on:
+      - nms
+
+secrets:
+  nginx-crt:
+    file: ../../certs/nginx-repo.crt
+  nginx-key:
+    file: ../../certs/nginx-repo.key
+
+volumes:
+  db-data:
+  nms-data:

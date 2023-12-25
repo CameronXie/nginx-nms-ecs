@@ -1,0 +1,113 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Control Plane repository.
+
+Parameters:
+  ClickHouseRepositoryName:
+    Description: ClickHouse Repository Name.
+    Type: String
+
+  NMSRepositoryName:
+    Description: NMS Repository Name.
+    Type: String
+
+  ClickHouseUserArnParamName:
+    Description: ClickHouse User Secret Parameter Name.
+    Type: String
+
+  NMSAdminArnParamName:
+    Description: MMS Admin Secret Parameter Name.
+    Type: String
+
+  NMSLicenseArnParamName:
+    Description: MMS License Secret Parameter Name.
+    Type: String
+
+Resources:
+  ClickHouseRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref ClickHouseRepositoryName
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      RepositoryPolicyText:
+        Version: 2012-10-17
+        Statement:
+          - Sid: AllowManagedByCurrentAccount
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action:
+              - ecr:*
+
+  NMSRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref NMSRepositoryName
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      RepositoryPolicyText:
+        Version: 2012-10-17
+        Statement:
+          - Sid: AllowManagedByCurrentAccount
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action:
+              - ecr:*
+
+  ClickHouseUser:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${AWS::StackName}-clickhouse-user
+      Description: ClickHouse User Secret.
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "admin"}'
+        GenerateStringKey: password
+        PasswordLength: 16
+        ExcludeCharacters: "\"'@/\\~$^&|"
+
+  ClickHouseUserArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Ref ClickHouseUserArnParamName
+      Description: SSM Parameter for ClickHouse User Secret ARN.
+      Type: String
+      Value: !Ref ClickHouseUser
+
+  NMSAdmin:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${AWS::StackName}-nms-admin
+      Description: NGINX Management Suite Admin Secret.
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "admin"}'
+        GenerateStringKey: password
+        PasswordLength: 16
+        ExcludeCharacters: "\"'@/\\~$^&|"
+
+  NMSAdminArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Ref NMSAdminArnParamName
+      Description: SSM Parameter for NGINX Management Suite Admin Secret ARN.
+      Type: String
+      Value: !Ref NMSAdmin
+
+  NMSLicense:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${AWS::StackName}-nms-license
+      Description: NGINX Management Suite License Secret.
+
+  NMSLicenseArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Ref NMSLicenseArnParamName
+      Description: SSM Parameter for NGINX Management Suite License ARN.
+      Type: String
+      Value: !Ref NMSLicense

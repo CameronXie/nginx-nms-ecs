@@ -1,0 +1,522 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: NGINX Management Suite stack.
+
+Parameters:
+  VpcId:
+    Description: VPC ID.
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::VPC::Id>'
+    Default: /nginx-nms-ecs/vpc-id
+
+  PublicSubnetIds:
+    Description: Public Subnet IDs.
+    Type: 'AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>'
+    Default: /nginx-nms-ecs/public-subnet-ids
+
+  PrivateSubnetIds:
+    Description: Private Subnet IDs.
+    Type: 'AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>'
+    Default: /nginx-nms-ecs/private-subnet-ids
+
+  NMSLoadBalancerDNSNameParamName:
+    Description: NMS Load Balancer DNS Name Parameter Name.
+    Type: String
+
+  NMSAdminArn:
+    Description: NMS Admin Secret Arn.
+    Type: 'AWS::SSM::Parameter::Value<String>'
+
+  ClickHouseUserArn:
+    Description: ClickHouse User Secret Arn.
+    Type: 'AWS::SSM::Parameter::Value<String>'
+
+  NMSLicenseArn:
+    Description: NMS License Secret Arn.
+    Type: 'AWS::SSM::Parameter::Value<String>'
+
+  ClickHouseImage:
+    Description: NMS Image.
+    Type: String
+
+  ClickHousePortNumber:
+    Description: ClickHouse Port Number.
+    Type: Number
+    Default: 9000
+
+  ClickHouseServiceMinCapacity:
+    Description: ClickHouse Service Minimum Capacity.
+    Type: Number
+    Default: 1
+
+  NMSImage:
+    Description: NMS Image.
+    Type: String
+
+  NMSPortNumber:
+    Description: NMS Port Number.
+    Type: Number
+    Default: 443
+
+  NMSServiceMinCapacity:
+    Description: NMS Service Minimum Capacity.
+    Type: Number
+    Default: 1
+
+Resources:
+  NMSLoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for NMS Load Balancer.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+
+  NMSLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      #      Scheme: internal
+      Type: network
+      Subnets: !Ref PublicSubnetIds
+      SecurityGroups:
+        - !Ref 'NMSLoadBalancerSecurityGroup'
+
+  NMSLoadBalancerDNSNameParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Ref NMSLoadBalancerDNSNameParamName
+      Description: SSM Parameter for NGINX Management Suite Load Balancer DNS Name.
+      Type: String
+      Value: !GetAtt NMSLoadBalancer.DNSName
+
+  NMSListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref NMSTargetGroup
+      LoadBalancerArn: !Ref NMSLoadBalancer
+      Port: !Ref NMSPortNumber
+      Protocol: TCP
+
+  NMSTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckProtocol: TCP
+      HealthCheckPort: !Ref NMSPortNumber
+      HealthCheckIntervalSeconds: 20
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "300"
+      TargetType: ip
+      Port: !Ref NMSPortNumber
+      Protocol: TCP
+      VpcId: !Ref VpcId
+
+  Namespace:
+    Type: AWS::ServiceDiscovery::HttpNamespace
+    Properties:
+      Description: !Sub Namespace for ${AWS::StackName}.
+      Name: !Ref AWS::StackName
+
+  ECSLogGroup:
+    Type: "AWS::Logs::LogGroup"
+    Properties:
+      LogGroupName: !Sub '${AWS::StackName}-ecs'
+      RetentionInDays: 7
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${AWS::StackName}-cluster
+      CapacityProviders:
+        - FARGATE
+      Configuration:
+        ExecuteCommandConfiguration:
+          LogConfiguration:
+            CloudWatchEncryptionEnabled: false
+            CloudWatchLogGroupName: !Ref ECSLogGroup
+          Logging: OVERRIDE
+      ServiceConnectDefaults:
+        Namespace: !GetAtt Namespace.Arn
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+  ClickHouseTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: AllowNMSSecretAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref ClickHouseUserArn
+
+  ClickHouseService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: clickhouse
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      TaskDefinition: !Ref ClickHouseTaskDefinition
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+      DesiredCount: !Ref ClickHouseServiceMinCapacity
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups:
+            - !GetAtt ClickHouseSecurityGroup.GroupId
+      ServiceConnectConfiguration:
+        Enabled: true
+        Services:
+          - PortName: clickhouse
+            DiscoveryName: clickhouse
+            ClientAliases:
+              - DnsName: clickhouse
+                Port: !Ref ClickHousePortNumber
+
+  ClickHouseTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Cpu: 256
+      Memory: 0.5GB
+      NetworkMode: awsvpc
+      Family: clickhouse
+      ExecutionRoleArn: !GetAtt ClickHouseTaskExecutionRole.Arn
+      RequiresCompatibilities:
+        - FARGATE
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: clickhouse
+          Image: !Ref ClickHouseImage
+          Essential: true
+          PortMappings:
+            - Name: clickhouse
+              ContainerPort: !Ref ClickHousePortNumber
+              HostPort: !Ref ClickHousePortNumber
+              Protocol: tcp
+          MountPoints:
+            - SourceVolume: EFS
+              ContainerPath: /var/lib/clickhouse/
+              ReadOnly: false
+            - SourceVolume: EFS
+              ContainerPath: /var/log/clickhouse-server/
+              ReadOnly: false
+          Secrets:
+            - Name: CLICKHOUSE_USER
+              ValueFrom: !Sub "${ClickHouseUserArn}:username::"
+            - Name: CLICKHOUSE_PASSWORD
+              ValueFrom: !Sub "${ClickHouseUserArn}:password::"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ECSLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: clickhouse
+      Volumes:
+        - Name: EFS
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref ClickHouseFileSystem
+            RootDirectory: /
+            AuthorizationConfig:
+              AccessPointId: !Ref ClickHouseEFSAccessPoint
+            TransitEncryption: ENABLED
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+
+  ClickHouseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for ClickHouse ECS task.
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          DestinationSecurityGroupId: !Ref ClickHouseMountTargetSecurityGroup
+
+  ClickHouseSecurityGroupFromNMS:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Ingress from NMS.
+      GroupId: !Ref ClickHouseSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref ClickHousePortNumber
+      ToPort: !Ref ClickHousePortNumber
+      SourceSecurityGroupId: !Ref 'NMSTaskSecurityGroup'
+
+  ClickHouseFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      FileSystemTags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-clickhouse-efs
+      BackupPolicy:
+        Status: ENABLED
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+
+  ClickHouseMountTargetSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${AWS::StackName}-clickhouse-ecf-mt-sg
+      GroupDescription: !Sub ${AWS::StackName} ClickHouse EFS Mount Target Security Group.
+      VpcId: !Ref VpcId
+
+  ClickHouseMountTargetSecurityGroupFromClickHouse:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Allow traffic from ClickHouseSecurityGroup on port 2049.
+      GroupId: !Ref ClickHouseMountTargetSecurityGroup
+      IpProtocol: tcp
+      FromPort: 2049
+      ToPort: 2049
+      SourceSecurityGroupId: !Ref ClickHouseSecurityGroup
+
+  ClickHouseMountTargetOne:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref ClickHouseFileSystem
+      SubnetId: !Select [ 0, !Ref PrivateSubnetIds ]
+      SecurityGroups:
+        - !Ref ClickHouseMountTargetSecurityGroup
+
+  ClickHouseMountTargetTwo:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref ClickHouseFileSystem
+      SubnetId: !Select [ 1, !Ref PrivateSubnetIds ]
+      SecurityGroups:
+        - !Ref ClickHouseMountTargetSecurityGroup
+
+  ClickHouseEFSAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref ClickHouseFileSystem
+
+  NMSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: AllowNMSSecretAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref ClickHouseUserArn
+                  - !Ref NMSAdminArn
+                  - !Ref NMSLicenseArn
+
+  NMSService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - NMSListener
+      - ClickHouseService
+    Properties:
+      ServiceName: nms
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      TaskDefinition: !Ref NMSTaskDefinition
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+      DesiredCount: !Ref NMSServiceMinCapacity
+      HealthCheckGracePeriodSeconds: 300
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups:
+            - !GetAtt NMSTaskSecurityGroup.GroupId
+      LoadBalancers:
+        - TargetGroupArn: !Ref NMSTargetGroup
+          ContainerName: nms
+          ContainerPort: !Ref NMSPortNumber
+      ServiceConnectConfiguration:
+        Enabled: true
+        Services:
+          - PortName: nms
+            DiscoveryName: nms
+            ClientAliases:
+              - DnsName: nms
+                Port: !Ref NMSPortNumber
+
+  NMSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Cpu: 256
+      Memory: 0.5GB
+      NetworkMode: awsvpc
+      Family: nms
+      ExecutionRoleArn: !GetAtt NMSTaskExecutionRole.Arn
+      RequiresCompatibilities:
+        - FARGATE
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: nms
+          Image: !Ref NMSImage
+          Essential: true
+          PortMappings:
+            - Name: nms
+              ContainerPort: !Ref NMSPortNumber
+              HostPort: !Ref NMSPortNumber
+              Protocol: tcp
+          MountPoints:
+            - SourceVolume: EFS
+              ContainerPath: /var/lib/nms/
+              ReadOnly: false
+          Environment:
+            - Name: NIM_CLICKHOUSE_ADDRESS
+              Value: clickhouse
+            - Name: NIM_CLICKHOUSE_PORT
+              Value: !Ref ClickHousePortNumber
+          Secrets:
+            - Name: NIM_CLICKHOUSE_USERNAME
+              ValueFrom: !Sub "${ClickHouseUserArn}:username::"
+            - Name: NIM_CLICKHOUSE_PASSWORD
+              ValueFrom: !Sub "${ClickHouseUserArn}:password::"
+            - Name: NIM_USERNAME
+              ValueFrom: !Sub "${NMSAdminArn}:username::"
+            - Name: NIM_PASSWORD
+              ValueFrom: !Sub "${NMSAdminArn}:password::"
+            - Name: NIM_LICENSE
+              ValueFrom: !Ref NMSLicenseArn
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ECSLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: clickhouse
+      Volumes:
+        - Name: EFS
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref NMSFileSystem
+            RootDirectory: /
+            AuthorizationConfig:
+              AccessPointId: !Ref NMSEFSAccessPoint
+            TransitEncryption: ENABLED
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+
+  NMSTaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for NMS ECS task.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref NMSPortNumber
+          ToPort: !Ref NMSPortNumber
+          SourceSecurityGroupId: !GetAtt NMSLoadBalancerSecurityGroup.GroupId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          DestinationSecurityGroupId: !GetAtt NMSMountTargetSecurityGroup.GroupId
+        - IpProtocol: tcp
+          FromPort: !Ref ClickHousePortNumber
+          ToPort: !Ref ClickHousePortNumber
+          DestinationSecurityGroupId: !GetAtt ClickHouseSecurityGroup.GroupId
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+
+  NMSFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      FileSystemTags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-nms-efs
+      BackupPolicy:
+        Status: ENABLED
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+
+  NMSMountTargetSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${AWS::StackName}-nms-ecf-mt-sg
+      GroupDescription: !Sub ${AWS::StackName} NMS EFS Mount Target Security Group.
+      VpcId: !Ref VpcId
+
+  NMSMountTargetSecurityGroupFromNMS:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Allow traffic from NMSTaskSecurityGroup on port 2049.
+      GroupId: !Ref NMSMountTargetSecurityGroup
+      IpProtocol: tcp
+      FromPort: 2049
+      ToPort: 2049
+      SourceSecurityGroupId: !Ref NMSTaskSecurityGroup
+
+  NMSMountTargetOne:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref NMSFileSystem
+      SubnetId: !Select [ 0, !Ref PrivateSubnetIds ]
+      SecurityGroups:
+        - !Ref NMSMountTargetSecurityGroup
+
+  NMSMountTargetTwo:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref NMSFileSystem
+      SubnetId: !Select [ 1, !Ref PrivateSubnetIds ]
+      SecurityGroups:
+        - !Ref NMSMountTargetSecurityGroup
+
+  NMSEFSAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref NMSFileSystem
+
+Outputs:
+  URL:
+    Description: The URL of the NGINX Management Suite.
+    Value: !Join [ '', [ 'https://', !GetAtt [ NMSLoadBalancer, DNSName ] ] ]

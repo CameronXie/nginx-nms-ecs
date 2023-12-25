@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Data Plane stack.
+
+Parameters:
+  VpcId:
+    Description: VPC ID.
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::VPC::Id>'
+    Default: /nginx-nms-ecs/vpc-id
+
+  PublicSubnetIds:
+    Description: Public Subnet IDs.
+    Type: 'AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>'
+    Default: /nginx-nms-ecs/public-subnet-ids
+
+  PrivateSubnetIds:
+    Description: Private Subnet IDs.
+    Type: 'AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>'
+    Default: /nginx-nms-ecs/private-subnet-ids
+
+  NMSLoadBalancerDNSName:
+    Description: NMS Load Balancer DNS Name Parameter Name.
+    Type: 'AWS::SSM::Parameter::Value<String>'
+
+  Image:
+    Description: Data Plane Image.
+    Type: String
+
+  PortNumber:
+    Description: Data Plane Port Number.
+    Type: Number
+    Default: 443
+
+Resources:
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for Data Plane Load Balancer.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref PortNumber
+          ToPort: !Ref PortNumber
+          CidrIp: 0.0.0.0/0
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      #      Scheme: internal
+      Type: network
+      Subnets: !Ref PublicSubnetIds
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: !Ref PortNumber
+      Protocol: TCP
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckProtocol: TCP
+      HealthCheckPort: !Ref PortNumber
+      HealthCheckIntervalSeconds: 20
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "300"
+      TargetType: ip
+      Port: !Ref PortNumber
+      Protocol: TCP
+      VpcId: !Ref VpcId
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${AWS::StackName}-cluster
+
+  TasksLogGroup:
+    Type: "AWS::Logs::LogGroup"
+    Properties:
+      LogGroupName: !Sub '${AWS::StackName}-tasks'
+      RetentionInDays: 7
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: dataplane
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      TaskDefinition: !Ref TaskDefinition
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups:
+            - !GetAtt DPSecurityGroup.GroupId
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Cpu: 256
+      Memory: 0.5GB
+      NetworkMode: awsvpc
+      Family: dataplane
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      RequiresCompatibilities:
+        - FARGATE
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: dataplane
+          Image: !Ref Image
+          Essential: true
+          PortMappings:
+            - Name: dataplane
+              ContainerPort: !Ref PortNumber
+              HostPort: !Ref PortNumber
+              Protocol: tcp
+          Environment:
+            - Name: NIM_HOST
+              Value: !Ref NMSLoadBalancerDNSName
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref TasksLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: dataplane
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+
+  DPSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for Data Plane ECS task.
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0

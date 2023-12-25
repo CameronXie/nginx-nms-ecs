@@ -1,0 +1,206 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: VPC Stack.
+
+Parameters:
+  VpcIdParamName:
+    Description: VPC ID Parameter Name.
+    Type: String
+
+  PublicSubnetIdParamName:
+    Description: Public Subnet ID Parameter Name.
+    Type: String
+
+  PrivateSubnetIdParamName:
+    Description: Private Subnet ID Parameter Name.
+    Type: String
+
+Mappings:
+  SubnetConfig:
+    VPC:
+      CIDR: 10.0.0.0/25
+    PublicOne:
+      CIDR: 10.0.0.0/28
+    PublicTwo:
+      CIDR: 10.0.0.16/28
+    PrivateOne:
+      CIDR: 10.0.0.32/28
+    PrivateTwo:
+      CIDR: 10.0.0.64/28
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      CidrBlock: !FindInMap [SubnetConfig, VPC, CIDR]
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}
+
+  VpcIdParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Ref VpcIdParamName
+      Description: SSM Parameter for VPC ID.
+      Type: String
+      Value: !Ref VPC
+
+  PublicSubnetOne:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap [SubnetConfig, PublicOne, CIDR]
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-public-subnet-one
+
+  PublicSubnetTwo:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select
+        - 1
+        - !GetAZs {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap [SubnetConfig, PublicTwo, CIDR]
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-public-subnet-two
+
+  PublicSubnetIdsParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Ref PublicSubnetIdParamName
+      Description: SSM Parameter for Public Subnet Id.
+      Type: StringList
+      Value: !Join [',', [!Ref PublicSubnetOne, !Ref PublicSubnetTwo]]
+
+  PrivateSubnetOne:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap [SubnetConfig, PrivateOne, CIDR]
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-private-subnet-one
+
+  PrivateSubnetTwo:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select
+        - 1
+        - !GetAZs {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap [SubnetConfig, PrivateTwo, CIDR]
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-private-subnet-two
+
+  PrivateSubnetIdsParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Ref PrivateSubnetIdParamName
+      Description: SSM Parameter for Private Subnet Id.
+      Type: StringList
+      Value: !Join [',', [!Ref PrivateSubnetOne, !Ref PrivateSubnetTwo]]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref 'VPC'
+      InternetGatewayId: !Ref 'InternetGateway'
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref 'PublicRouteTable'
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref 'InternetGateway'
+
+  PublicSubnetOneRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetOne
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetTwoRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetTwo
+      RouteTableId: !Ref PublicRouteTable
+
+  NatGatewayOneAttachment:
+    Type: AWS::EC2::EIP
+    DependsOn: GatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGatewayTwoAttachment:
+    Type: AWS::EC2::EIP
+    DependsOn: GatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGatewayOne:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayOneAttachment.AllocationId
+      SubnetId: !Ref PublicSubnetOne
+
+  NatGatewayTwo:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayTwoAttachment.AllocationId
+      SubnetId: !Ref PublicSubnetTwo
+
+  PrivateRouteTableOne:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+
+  PrivateRouteOne:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableOne
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayOne
+
+  PrivateRouteTableOneAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableOne
+      SubnetId: !Ref PrivateSubnetOne
+
+  PrivateRouteTableTwo:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+
+  PrivateRouteTwo:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableTwo
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayTwo
+
+  PrivateRouteTableTwoAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableTwo
+      SubnetId: !Ref PrivateSubnetTwo
