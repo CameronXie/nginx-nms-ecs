@@ -8,6 +8,7 @@ cp_repo_stack_name:=$(project_name)-cp-repository
 cp_platform_stack_name:=$(project_name)-cp-platform
 dp_repo_stack_name:=$(project_name)-dp-repository
 dp_platform_stack_name:=$(project_name)-dp-platform
+bastion_stack_name:=$(project_name)-bastion
 
 # parameters
 clickhouse_repo_name:=$(project_name)-clickhouse
@@ -66,7 +67,6 @@ deploy-cp:
 	@$(MAKE) -j 2 publish-clickhouse-image publish-nms-image
 	@rain deploy $(cfn_dir)/control-plane/platform.yaml $(cp_platform_stack_name) -y \
 		--params VpcId=$(vpc_id_param_name),\
-	PublicSubnetIds=$(public_subnet_ids_param_name),\
 	PrivateSubnetIds=$(private_subnet_ids_param_name),\
 	NMSLoadBalancerDNSNameParamName=$(nms_lb_dns_param_name),\
 	ClickHouseUserArn=$(clickhouse_user_arn_param_name),\
@@ -87,6 +87,11 @@ deploy-dp:
 	PrivateSubnetIds=$(private_subnet_ids_param_name),\
 	NMSLoadBalancerDNSName=$(nms_lb_dns_param_name),\
 	Image=$(data_plane_image_tag)
+
+.PHONY: deploy-bastion
+deploy-bastion:
+	@rain deploy $(cfn_dir)/bastion.yaml $(bastion_stack_name) -y \
+		--params NMSLoadBalancerDNSName=$(nms_lb_dns_param_name)
 
 .PHONY: upload-license
 upload-license:
@@ -127,6 +132,12 @@ publish-dp-image:
 get-nms-url:
 	@aws cloudformation --region ${AWS_DEFAULT_REGION} describe-stacks --stack-name $(cp_platform_stack_name) \
 		--query 'Stacks[0].Outputs[?OutputKey==`URL`].OutputValue' --output text
+
+port-forwarding:
+	@aws ssm start-session --target $(shell aws cloudformation --region ${AWS_DEFAULT_REGION} describe-stacks --stack-name $(bastion_stack_name) --query 'Stacks[0].Outputs[?OutputKey==`InstanceId`].OutputValue' --output text) \
+		--document-name AWS-StartPortForwardingSession \
+		--parameters "portNumber"=["8443"],"localPortNumber"=["8443"] \
+		--region ${AWS_DEFAULT_REGION}
 
 ## Docker Container
 .PHONY: deploy-docker

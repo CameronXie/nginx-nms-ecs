@@ -7,11 +7,14 @@ services:
     platform: linux/amd64
     volumes:
       - './:/var/code'
+      - './docker/dev/nginx.conf:/etc/nginx/conf.d/custom.conf:ro'
     working_dir: '/var/code'
-    command: [ '/bin/sh', '-c', 'tail -f /dev/null' ]
+    command: [ '/bin/sh', '-c', 'nginx -g "daemon off;"' ]
     env_file:
       - .env
     restart: always
+    ports:
+      - "8443:8080"
     depends_on:
       - docker
 

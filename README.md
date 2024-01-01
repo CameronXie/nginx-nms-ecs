@@ -43,6 +43,10 @@ Docker images.
 
 Run `make deploy` to deploy both control plane and data plane on AWS ECS.
 
+To access NMS load balancer, optionally can run `make deploy-bastion` to deploy a bastion box on AWS EC2, and
+run `make port-forwarding` to forward traffic from the host machine to NMS load balancer via two reverse proxies.
+Open http://localhost:8443/ in web browser on local machine.
+
 ## Deploy to Docker
 
 Run `make deploy-docker` to deploy both control plane and data plane on docker containers.

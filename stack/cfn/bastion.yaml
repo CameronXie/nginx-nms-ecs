@@ -1,0 +1,120 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Bastion Instance.
+
+Parameters:
+  VpcId:
+    Description: VPC ID.
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::VPC::Id>
+    Default: /nginx-nms-ecs/vpc-id
+
+  NMSLoadBalancerDNSName:
+    Description: NMS Load Balancer DNS Name Parameter Name.
+    Type: AWS::SSM::Parameter::Value<String>
+
+  PrivateSubnetIds:
+    Description: Private Subnet IDs.
+    Type: AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>
+    Default: /nginx-nms-ecs/private-subnet-ids
+
+  LinuxAMI:
+    Description: Amazon Linux AMI.
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn-ami-hvm-x86_64-gp2
+
+  ReverseProxyPortNumber:
+    Description: Bastion Reverse Proxy Port Number.
+    Type: String
+    Default: 8443
+
+Resources:
+  Instance:
+    Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          install_and_configure_nginx:
+            - install_nginx
+            - configure_nginx
+        install_nginx:
+          packages:
+            yum:
+              nginx: []
+        configure_nginx:
+          files:
+            /etc/nginx/conf.d/custom.conf:
+              content: !Sub |
+                server {
+                  listen ${ReverseProxyPortNumber};
+                  location / {
+                    proxy_pass https://${NMSLoadBalancerDNSName};
+                  }
+                }
+          services:
+            sysvinit:
+              nginx:
+                enabled: true
+                ensureRunning: true
+    Properties:
+      InstanceType: t3.micro
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      SubnetId: !Select [0, !Ref PrivateSubnetIds]
+      ImageId: !Ref LinuxAMI
+      IamInstanceProfile: !Ref InstanceProfile
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash
+          /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource Instance --configsets install_and_configure_nginx --region ${AWS::Region}
+      Tags:
+        - Key: Name
+          Value: Bastion
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: AllowSessionManager
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssmmessages:CreateControlChannel
+                  - ssmmessages:CreateDataChannel
+                  - ssmmessages:OpenControlChannel
+                  - ssmmessages:OpenDataChannel
+                Resource: '*'
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref InstanceRole
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Bastion Instance Security Group
+      VpcId: !Ref VpcId
+      Tags:
+        - Key: Name
+          Value: BastionSG
+
+Outputs:
+  InstanceId:
+    Description: Bastion EC2 Instance ID.
+    Value: !Ref Instance

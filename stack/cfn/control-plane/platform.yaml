@@ -8,11 +8,6 @@ Parameters:
     Type: 'AWS::SSM::Parameter::Value<AWS::EC2::VPC::Id>'
     Default: /nginx-nms-ecs/vpc-id
 
-  PublicSubnetIds:
-    Description: Public Subnet IDs.
-    Type: 'AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>'
-    Default: /nginx-nms-ecs/public-subnet-ids
-
   PrivateSubnetIds:
     Description: Private Subnet IDs.
     Type: 'AWS::SSM::Parameter::Value<List<AWS::EC2::Subnet::Id>>'
@@ -77,9 +72,9 @@ Resources:
   NMSLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      #      Scheme: internal
+      Scheme: internal
       Type: network
-      Subnets: !Ref PublicSubnetIds
+      Subnets: !Ref PrivateSubnetIds
       SecurityGroups:
         - !Ref 'NMSLoadBalancerSecurityGroup'
 
