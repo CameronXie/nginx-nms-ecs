@@ -169,6 +169,11 @@ Resources:
     Properties:
       GroupDescription: Security Group for Data Plane ECS task.
       VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref PortNumber
+          ToPort: !Ref PortNumber
+          SourceSecurityGroupId: !GetAtt LoadBalancerSecurityGroup.GroupId
       SecurityGroupEgress:
         - IpProtocol: tcp
           FromPort: 443

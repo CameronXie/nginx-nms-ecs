@@ -45,7 +45,7 @@ create-dev-env:
 # CI/CD
 ## AWS ECS
 .PHONY: deploy
-deploy: deploy-vpc deploy-cp deploy-dp
+deploy: deploy-vpc deploy-cp deploy-dp deploy-bastion
 
 .PHONY: deploy-vpc
 deploy-vpc:
